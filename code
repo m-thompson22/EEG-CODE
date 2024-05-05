@@ -1,0 +1,873 @@
+---
+title: "EEG Study"
+format: html
+editor: visual
+---
+
+{r}
+#| label: Load R Packages 
+#| include: false 
+
+library(osfr)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(ez)
+library(patchwork)
+library(gee)
+
+{r}
+#| label: load R Packages 
+#| include: false 
+
+osf_retrieve_node("ngtha") %>%
+  osf_ls_files() %>%
+  osf_download(path = "data", conflicts = "skip")
+
+{r}
+#| echo: false
+## data exclusions
+
+{r}
+#| label: load the behavioral data 
+#| include: false 
+
+behavioral_data <- read_csv("data/behavioral.csv")
+eeg_data <- read_csv("data/eeg.csv")
+
+{r}
+#| label: list subject_id that saw fashion words twice (double fashion bug)
+#| include: false
+
+filtered_fashion <- behavioral_data %>%
+  group_by(subject_id, phase) %>%
+  filter(phase == "fashion") %>%
+  summarize(n = n())  %>%
+  filter(n > 3000)  %>%
+  pull(subject_id)
+
+{r}
+#| label: list subject_id who failed to respond more than 50% of the time
+#| include: false
+
+filtered_percent <- behavioral_data %>%
+  group_by(phase) %>%
+  filter(word_type != "practice") %>%
+  ungroup() %>%
+  group_by(subject_id, rt) %>%
+  filter(rt == "NA") %>%
+  summarize(n = n()) %>%
+  filter(n >= 300)  %>%
+  pull(subject_id)
+
+{r}
+#| label: list subject_id for participants who answered non-word more than 90% of the time
+#| include: false 
+
+filtered_nonword <- behavioral_data %>%
+  filter(task == "response", word_type != "practice") %>%
+  group_by(subject_id, is_word, correct) %>%
+  mutate(nonword_response = (is_word == FALSE & correct == TRUE) | (is_word == FALSE & correct == FALSE)) %>%
+  filter(nonword_response == TRUE) %>%
+  group_by(subject_id) %>%
+  summarize(n = n()) %>%
+  filter(n >= .9 *600) %>%
+  pull(subject_id)
+
+{r}
+#| label: filter out subject id 34
+#| include: false 
+
+filtered_id <- behavioral_data %>%
+  group_by(subject_id, trial_index) %>%
+  filter(subject_id == 34, trial_index == 0) %>%
+  pull(subject_id)
+
+{r}
+#| label: filter out above trials 
+#| include: false 
+
+filtered_subjects <- behavioral_data %>%
+  filter(subject_id != 34) %>%
+  filter(!(subject_id %in% filtered_fashion))  %>%
+  filter(!(subject_id %in% filtered_percent))  %>%
+  filter(!(subject_id %in% filtered_nonword)) 
+
+{r}
+#| label: count the number of subjects remaining 
+#| include: false 
+
+n_subjects <- behavioral_data %>%
+ summarize(n_subjects = max(subject_id)) %>%
+  pull(n_subjects)
+
+n_fashion_exclusions <- length(filtered_fashion)
+
+n_percent_exclusions <- length(filtered_percent)
+
+n_nonword_exclusions <- length(filtered_nonword) 
+
+remaining_subjects <- length(unique(filtered_subjects$subject_id))
+
+{r}
+#| echo: false
+## behavioral data
+
+{r}
+#| label: filter for relevant data
+#| include: false 
+
+relevant_data <- filtered_subjects %>% 
+  filter(word_type != "practice") %>% 
+  select(rt, trial_index, subject_id, task, phase, is_word, word_type, correct) %>%
+  filter(task == "response")
+
+{r}
+#| label: Create relevant data category column
+#| include: false
+
+relevant_data_column <- relevant_data %>%
+  mutate(word_category = if_else(word_type %in% c("fashion", "moral"), "category", "non-category"))
+
+{r}
+#| label: flip keys for subjects 01 and 36
+#| include: false
+
+relevant_data_corrected <- relevant_data_column %>%
+  mutate(correct = if_else(subject_id == "01", if_else(correct, FALSE, TRUE), correct))
+
+relevant_data_corrected <- relevant_data_corrected %>%
+  mutate(correct = if_else(subject_id == "36" & phase == "moral", if_else(correct, FALSE, TRUE), correct))
+
+{r}
+#| label: Calculate the accuracy for each subject in each category
+#| include: false
+
+accuracy_data <- relevant_data_corrected %>%
+  group_by(subject_id, word_type, is_word) %>%
+  summarize(
+    accuracy_mean = mean(correct),
+            accuracy_sd = sd(correct))
+
+accuracy_moral_behavioral <- accuracy_data %>%
+  filter(word_type == "moral", is_word == "TRUE") %>%
+  group_by(word_type) %>%
+  summarize(mean1 = mean(accuracy_mean)) %>%
+  pull(mean1)
+
+accuracy_nonword_moral_behavioral <- accuracy_data %>%
+  filter(word_type == "non-moral", is_word == "TRUE") %>%
+  group_by(word_type) %>%
+  summarize(mean1 = mean(accuracy_mean)) %>%
+  pull(mean1)
+
+accuracy_fashion_behavioral <- accuracy_data %>%
+  filter(word_type == "fashion", is_word == "TRUE") %>%
+  group_by(word_type) %>%
+  summarize(mean2 = mean(accuracy_mean)) %>%
+  pull(mean2)
+
+accuracy_nonword_fashion_behavioral <- accuracy_data %>%
+  filter(word_type == "non-fashion", is_word == "TRUE") %>%
+  group_by(word_type) %>%
+  summarize(mean2 = mean(accuracy_mean)) %>%
+  pull(mean2)
+
+{r}
+#| label: Moral pop-out graph
+#| include: false
+
+combined_data <- accuracy_data %>%
+  filter(word_type %in% c("moral", "fashion"))
+
+moral_data <- accuracy_data %>%
+  filter(word_type == "moral")
+
+#Moral data if it is a word
+moral_word_data <- moral_data %>%
+  filter(is_word == "TRUE")
+
+#Moral data for nonword
+moral_nonword_data <- moral_data %>%
+  filter(is_word == "FALSE")
+
+#fashion data
+fashion_data <- accuracy_data %>%
+  filter(word_type == "fashion")
+
+#fashion data for word
+fashion_word_data <- fashion_data %>%
+  filter(is_word == "TRUE")
+
+#fashiond data for nonword
+fashion_nonword <- fashion_data %>%
+  filter(is_word == "FALSE")
+
+# GRAPHS 
+moral_plot <- ggplot(moral_nonword_data, aes(x = moral_nonword_data$accuracy_mean, y = moral_word_data$accuracy_mean)) + geom_point() + 
+  ylim(0.5 ,1) +
+  xlim(0.5, 1) +
+  geom_abline(slope = 1, linetype = 3) +
+  labs(title = "Moral Words",
+       x = "Accuracy for non-category words",
+       y = "Frequency of Correct Categorization")
+
+fashion_plot <- ggplot(fashion_nonword, aes(x = fashion_nonword$accuracy_mean, y = fashion_word_data$accuracy_mean)) + geom_point() +
+  ylim(0.5 ,1) +
+  xlim(0.5, 1) +
+  geom_abline(slope = 1, linetype = 3) +
+  labs(title = "Fashion Words",
+       x = "Accuracy for non-category words",
+       y = "Frequency of Correct Categorization")
+  
+moral_fashion_plot <- moral_plot + fashion_plot 
+
+{r}
+#| label: Dataframe for GEE analysis
+#| include: false
+
+GEE_data <- relevant_data_corrected %>%
+  select(subject_id, is_word, phase, word_category, correct)
+
+{r}
+#| label: GEE analysis
+#| include: false
+
+fashion_pop_out_data <- GEE_data %>%
+  filter(phase == 'fashion')
+
+fashion_pop_out_model <- gee(correct ~ word_category,
+                             id = subject_id, 
+                             data = fashion_pop_out_data, 
+                             family = binomial, 
+                             corstr = "exchangeable")
+#summary#
+
+fashion_pop_out_model_summary <- summary(fashion_pop_out_model)
+
+#extraction#
+# $coefficients gets the coefficients table from the model summary object
+estimate_fashion_pop_out <- fashion_pop_out_model_summary$coefficients[2, 'Estimate']
+robust_se_fashion_pop_out <- fashion_pop_out_model_summary$coefficients[2, 'Robust S.E.']
+robust_z_fashion_pop_out <- fashion_pop_out_model_summary$coefficients[2, 'Robust z']
+
+#p-value#
+
+fashion_pop_out_p_val <- (1 - pnorm(abs(robust_z_fashion_pop_out))) * 2
+
+{r}
+#| label: Moral GEE analysis
+#| include: false
+
+moral_pop_out_data <- GEE_data %>%
+  filter(phase == 'moral')
+
+moral_pop_out_model <- gee(correct ~ word_category,
+                             id = subject_id, 
+                             data = moral_pop_out_data, 
+                             family = binomial, 
+                             corstr = "exchangeable")
+moral_pop_out_model_summary <- summary(fashion_pop_out_model)
+
+estimate_moral_pop_out <- moral_pop_out_model_summary$coefficients[2, 'Estimate']
+robust_se_moral_pop_out <- moral_pop_out_model_summary$coefficients[2, 'Robust S.E.']
+robust_z_moral_pop_out <- moral_pop_out_model_summary$coefficients[2, 'Robust z']
+
+#p-value#
+
+moral_pop_out_p_val <- (1 - pnorm(abs(robust_z_fashion_pop_out))) * 2
+
+{r}
+#| label: RT GEE analysis
+#| include: false
+
+RT_data <- relevant_data_corrected %>%
+    select(subject_id, is_word, rt, correct)
+
+RT_model <- gee(correct ~ rt, 
+                id = subject_id,
+                data = RT_data, 
+                family = binomial, 
+                corstr = "exchangeable")
+
+#RT Summary#
+
+RT_model_summary <- summary(RT_model)
+
+#RT extraction#
+
+estimate_RT <- RT_model_summary$coefficients[2, 'Estimate']
+robust_se_RT <- RT_model_summary$coefficients[2, 'Robust S.E.']
+robust_z_RT <- RT_model_summary$coefficients[2, 'Robust z']
+
+#RT p-value#
+
+RT_p_val <- (1 - pnorm(abs(robust_z_RT))) * 2
+
+{r}
+#| label: Filtering for the double fashion bug in EEG data
+#| include: false
+
+EEG_filtered <- eeg_data %>% 
+  filter(subject != 34) %>%
+  filter(!(subject %in% filtered_subjects)) %>%
+  filter(!(subject %in% filtered_percent)) %>%
+  filter(!(subject %in% filtered_nonword)) %>%
+  filter(!(subject %in% filtered_fashion))
+
+{r}
+#| label: Checking remaining
+#| include: false
+
+eeg_remaining_subjects <- length(unique(EEG_filtered$subject))
+
+{r}
+#| label: Flip Subject 01 and 36
+#| include: false
+
+EEG_filtered <- EEG_filtered %>%
+  mutate(correct = if_else(subject == "01", if_else(correct, FALSE, TRUE), correct))
+
+EEG_filtered <- EEG_filtered %>%
+  mutate(correct = if_else(subject == "36" & (word_type == "moral" | word_type == "non-moral"), if_else(correct, FALSE, TRUE), correct))
+
+{r}
+#| label: Counting usable trials for 8 conditions at each 2 electrodes
+#| include: false
+
+usable_per_subject <- EEG_filtered %>%
+  group_by(subject, word_type, electrode) %>%
+  summarize(trial_count = n(), .groups = "drop")
+
+usable_per_subject <- usable_per_subject %>%
+  mutate(word_category = if_else(word_type %in% c("fashion", "moral"), "category", "non-category"))
+
+
+{r}
+#| label: Get EEG Accuracy for each subject per category-- tells how much usable information we have
+#| include: false
+
+accuracy_EEG <- EEG_filtered %>%
+  group_by(subject, word_type, is_word) %>%
+  summarize(
+    accuracy_mean = mean(correct),
+            accuracy_sd = sd(correct))
+
+{r}
+#| label: Category Columns for EEG data-- determine if a word is in a category
+#| include: false
+eeg_category_column <- EEG_filtered %>%
+  mutate(word_category = if_else(word_type %in% c("fashion", "moral"), "category", "non-category")) %>%
+  filter(correct == TRUE)
+
+eeg_category_column <- eeg_category_column %>%
+  mutate(which_category = case_when(word_type %in% c("moral", "non-moral") ~ "moral", word_type %in% c("fashion", "non-fashion") ~ "fashion"))
+
+{r}
+#| label: Subject-level ERPs
+#| include: false
+subject_erp <- eeg_category_column %>%
+  group_by(subject, is_word, electrode, word_category, which_category, t) %>%
+  summarize(mean_voltage = mean(v), sd_voltage = sd(v))
+
+{r}
+#| label: Grand-average ERPs
+#| include: false
+
+eeg_avg_plot_data <- subject_erp %>%
+  group_by (is_word, electrode, t, word_category, which_category) %>%
+  summarize(avg_mean_voltage = mean(mean_voltage), se_voltage = sd(mean_voltage)/sqrt(n()), .groups = "drop") %>%
+  filter(word_category %in% c("category", "non-category")) 
+
+fashion_category_check <- eeg_avg_plot_data %>%
+  filter(word_category == "non-category")
+
+# Labels for plot
+eeg_avg_plot_data$is_word <- factor(eeg_avg_plot_data$is_word, labels = c("Non-word", "Word"))
+
+# ERP avg plot
+erp_grand_avg_plot <- ggplot(eeg_avg_plot_data, aes(x = t, y = avg_mean_voltage, color = is_word, linetype = word_category, fill= is_word)) +
+  geom_line(alpha = 0.5) +
+geom_ribbon(aes(ymin = (avg_mean_voltage - se_voltage), ymax = (avg_mean_voltage + se_voltage)), alpha = 0.3, color = "NA") + # corrected ymin to ymax
+  facet_grid(electrode ~ which_category) +
+   scale_linetype_manual(values = c("category" = "solid", "non-category" = "dashed"),
+                        labels = c("category" = "Moral/Fashion", "non-category" = "Non-Moral/Non-Fashion")) + 
+  labs(
+  x = "Time since word onset (ms)", 
+        y = "Voltage (uV)", 
+        color = "Is word?",
+        linetype = "Word category", 
+  fill = NULL
+        )
+
+{r}
+#| label: Average voltage in 4 time windows // 8 conditions
+#| include: false
+
+#creating variable to store EEG plot data
+eeg_plot_data <- eeg_category_column %>%
+  group_by(subject, word_type, is_word, electrode, t, word_category) %>%
+  mutate(time = t, voltage = v) %>%
+  summarize(mean_voltage = mean(voltage), sd_voltage = sd(voltage), .groups = "drop") %>% filter(word_category %in% c("category", "non-category"))
+
+#avg. voltage in each of the time windows (200-250, 250-350, 350-600, 600-800ms after word onset); corresponds to (P2, N2, P3, LPP)
+
+#P2
+avg_v_P2 <- eeg_plot_data %>%
+  filter(t >= 200, t <= 250) %>%
+  group_by(subject, electrode, word_type, is_word, word_category) %>%
+  summarize(mean_voltage = mean(mean_voltage), .groups = "drop")
+
+#N2
+avg_v_N2 <- eeg_plot_data %>%
+  filter(t >= 250, t <= 350) %>%
+  group_by(subject, electrode, word_type, is_word, word_category) %>%
+  summarize(mean_voltage = mean(mean_voltage), .groups = "drop")
+
+#P3
+avg_v_P3 <- eeg_plot_data %>%
+  filter(t >= 350, t <= 600) %>%
+  group_by(subject, electrode, word_type, is_word, word_category) %>%
+  summarize(mean_voltage = mean(mean_voltage), .groups = "drop")
+
+#LPP
+avg_v_LPP <- eeg_plot_data %>%
+  filter(t >= 600, t <= 800) %>%
+  group_by(subject, electrode, word_type, is_word, word_category) %>%
+  summarize(mean_voltage = mean(mean_voltage), .groups = "drop") 
+
+{r}
+#| label: MORAL/NON-MORAL words @ Pz --> 
+#| include: false
+
+{r}
+#| label: PZ/P2/moral 
+#| include: false
+
+pz_p2_moral <- eeg_category_column  %>%
+  filter(electrode == "Pz",
+         word_type == "moral" | word_type == "non-moral",
+         correct == TRUE, 
+         t >= 200,
+         t < 250) %>%
+  group_by(subject, event_id, is_word, which_category) %>%
+  summarize(mean_voltage = mean(v))
+
+pz_p2_moral_model <- gee(mean_voltage ~ is_word,
+  id = subject,               
+	data = pz_p2_moral, 
+	family = gaussian,
+	corstr = "exchangeable")
+
+pz_p2_moral_summary <- summary(pz_p2_moral_model)
+
+estimate_pz_p2_moral <- pz_p2_moral_summary$coefficients[2, 'Estimate']
+robust_se_pz_p2_moral <- pz_p2_moral_summary$coefficients[2, 'Robust S.E.']
+robust_z_pz_p2_moral <- pz_p2_moral_summary$coefficients[2, 'Robust z']
+
+moral_pz_p2_p_val <- (1 - pnorm(abs(robust_z_pz_p2_moral))) * 2
+
+{r}
+#| label: PZ/N2/moral 
+#| include: false
+
+# data frame for pz_n2_moral
+pz_n2_moral <- eeg_category_column  %>%
+  filter(electrode == "Pz",
+         word_type == "moral" | word_type == "non-moral",
+         t >= 250,
+         t < 350) %>%
+  group_by(subject, event_id, is_word, which_category) %>%
+  summarize(mean_voltage = mean(v))
+
+#model summary
+pz_n2_moral_model <- gee(mean_voltage ~ is_word,
+  id = subject,               
+	data = pz_n2_moral,
+	family = gaussian,
+	corstr = "exchangeable")
+
+pz_n2_moral_summary <- summary(pz_n2_moral_model)
+
+estimate_pz_n2_moral <- pz_n2_moral_summary$coefficients[2, 'Estimate']
+robust_se_pz_n2_moral <- pz_n2_moral_summary$coefficients[2, 'Robust S.E.']
+robust_z_pz_n2_moral <- pz_n2_moral_summary$coefficients[2, 'Robust z']
+
+moral_pz_n2_p_val <- (1 - pnorm(abs(robust_z_pz_n2_moral))) * 2
+
+{r}
+#| label: PZ/P3/moral 
+#| include: false
+
+pz_p3_moral <- eeg_category_column  %>%
+  filter(electrode == "Pz",
+         word_type == "moral" | word_type == "non-moral",
+         t >= 350,
+         t < 600) %>%
+  group_by(subject, event_id, is_word, which_category) %>%
+  summarize(mean_voltage = mean(v))
+
+pz_p3_moral_model <- gee(mean_voltage ~ is_word,
+  id = subject,               
+	data = pz_p3_moral, 
+	family = gaussian,
+	corstr = "exchangeable")
+
+pz_p3_moral_summary <- summary(pz_p3_moral_model)
+
+estimate_pz_p3_moral <- pz_p3_moral_summary$coefficients[2, 'Estimate']
+robust_se_pz_p3_moral <- pz_p3_moral_summary$coefficients[2, 'Robust S.E.']
+robust_z_pz_p3_moral <- pz_p3_moral_summary$coefficients[2, 'Robust z']
+
+moral_pz_p3_p_val <- (1 - pnorm(abs(robust_z_pz_p3_moral))) * 2
+
+{r}
+#| label: PZ/LPP/moral 
+#| include: false
+
+pz_LPP_moral <- eeg_category_column  %>%
+  filter(electrode == "Pz",
+         word_type == "moral" | word_type == "non-moral",
+         t >= 600,
+         t < 800) %>%
+  group_by( subject, event_id, is_word, which_category) %>%
+  summarize(mean_voltage = mean(v))
+
+pz_LPP_moral_model <- gee(mean_voltage ~ is_word,
+  id = subject,               
+	data = pz_LPP_moral, 
+	family = gaussian,
+	corstr = "exchangeable")
+
+pz_LPP_moral_summary <- summary(pz_LPP_moral_model)
+
+estimate_pz_LPP_moral <- pz_LPP_moral_summary$coefficients[2, 'Estimate']
+robust_se_pz_LPP_moral <- pz_LPP_moral_summary$coefficients[2, 'Robust S.E.']
+robust_z_pz_LPP_moral <- pz_LPP_moral_summary$coefficients[2, 'Robust z']
+
+moral_pz_LPP_p_val <- (1 - pnorm(abs(robust_z_pz_LPP_moral))) * 2
+
+
+{r}
+#| label: FASHION/NON-FASHION words @ Pz -->
+#| include: false
+
+{r}
+#| label: PZ/P2/fashion 
+#| include: false
+
+pz_p2_fashion <- eeg_category_column  %>%
+  filter(electrode == "Pz",
+         word_type == "fashion" | word_type == "non-fashion",
+         t >= 200,
+         t < 250) %>%
+  group_by( subject, event_id, is_word, which_category) %>%
+  summarize(mean_voltage = mean(v))
+
+pz_p2_fashion_model <- gee(mean_voltage ~ is_word,
+  id = subject,               
+	data = pz_p2_fashion,
+	family = gaussian,
+	corstr = "exchangeable")
+
+pz_p2_fashion_summary <- summary(pz_p2_fashion_model)
+
+estimate_pz_p2_fashion <- pz_p2_fashion_summary$coefficients[2, 'Estimate']
+robust_se_pz_p2_fashion <- pz_p2_fashion_summary$coefficients[2, 'Robust S.E.']
+robust_z_pz_p2_fashion <- pz_p2_fashion_summary$coefficients[2, 'Robust z']
+
+fashion_pz_p2_p_val <- (1 - pnorm(abs(robust_z_pz_p2_fashion))) * 2
+
+{r}
+#| label: PZ/N2/fashion 
+#| include: false
+
+pz_n2_fashion <- eeg_category_column  %>%
+  filter(electrode == "Pz",
+         word_type == "fashion" | word_type == "non-fashion",
+         t >= 250,
+         t < 350) %>%
+  group_by( subject, event_id, is_word, which_category) %>%
+  summarize(mean_voltage = mean(v))
+
+pz_n2_fashion_model <- gee(mean_voltage ~ is_word,
+  id = subject,               
+	data = pz_n2_fashion,
+	family = gaussian,
+	corstr = "exchangeable")
+
+pz_n2_fashion_summary <- summary(pz_n2_fashion_model)
+
+estimate_pz_n2_fashion <- pz_n2_fashion_summary$coefficients[2, 'Estimate']
+robust_se_pz_n2_fashion <- pz_n2_fashion_summary$coefficients[2, 'Robust S.E.']
+robust_z_pz_n2_fashion <- pz_n2_fashion_summary$coefficients[2, 'Robust z']
+
+fashion_pz_n2_p_val <- (1 - pnorm(abs(robust_z_pz_n2_fashion))) * 2
+
+{r}
+#| label: PZ/P3/fashion 
+#| include: false
+
+pz_p3_fashion <- eeg_category_column  %>%
+  filter(electrode == "Pz",
+         word_type == "fashion" | word_type == "non-fashion",
+         t >= 350,
+         t < 600) %>%
+  group_by( subject, event_id, is_word, which_category) %>%
+  summarize(mean_voltage = mean(v))
+
+pz_p3_fashion_model <- gee(mean_voltage ~ is_word,
+  id = subject,               
+	data = pz_p3_fashion, 
+	family = gaussian,
+	corstr = "exchangeable")
+
+pz_p3_fashion_summary <- summary(pz_p3_fashion_model)
+
+estimate_pz_p3_fashion <- pz_p3_fashion_summary$coefficients[2, 'Estimate']
+robust_se_pz_p3_fashion <- pz_p3_fashion_summary$coefficients[2, 'Robust S.E.']
+robust_z_pz_p3_fashion <- pz_p3_fashion_summary$coefficients[2, 'Robust z']
+
+fashion_pz_p3_p_val <- (1 - pnorm(abs(robust_z_pz_p3_fashion))) * 2
+
+{r}
+#| label: PZ/LPP/fashion 
+#| include: false
+#| 
+pz_LPP_fashion <- eeg_category_column  %>%
+  filter(electrode == "Pz",
+         word_type == "fashion" | word_type == "non-fashion",
+         t >= 600,
+         t < 800) %>%
+  group_by( subject, event_id, is_word, which_category) %>%
+  summarize(mean_voltage = mean(v))
+
+pz_LPP_fashion_model <- gee(mean_voltage ~ is_word,
+  id = subject,               
+	data = pz_LPP_fashion,
+	family = gaussian,
+	corstr = "exchangeable")
+
+pz_LPP_fashion_summary <- summary(pz_LPP_fashion_model)
+
+estimate_pz_LPP_fashion <- pz_LPP_fashion_summary$coefficients[2, 'Estimate']
+robust_se_pz_LPP_fashion <- pz_LPP_fashion_summary$coefficients[2, 'Robust S.E.']
+robust_z_pz_LPP_fashion <- pz_LPP_fashion_summary$coefficients[2, 'Robust z']
+
+fashion_pz_LPP_p_val <- (1 - pnorm(abs(robust_z_pz_LPP_fashion))) * 2
+
+{r}
+#| label: MORAL/NON-MORAL words @ Cz -->
+#| include: false
+
+{r}
+#| label: CZ/P2/moral 
+#| include: false
+
+cz_p2_moral <- eeg_category_column  %>%
+  filter(electrode == "Cz",
+         word_type == "moral" | word_type == "non-moral",
+         t >= 200,
+         t < 250) %>%
+  group_by( subject, event_id, is_word, word_type) %>%
+  summarize(mean_voltage = mean(v))
+
+cz_p2_moral_model <- gee(mean_voltage ~ word_type,
+  id = subject,               
+	data = cz_p2_moral, # you'll need to create this
+	family = gaussian,
+	corstr = "exchangeable")
+
+cz_p2_moral_summary <- summary(cz_p2_moral_model)
+
+estimate_cz_p2_moral <- cz_p2_moral_summary$coefficients[2, 'Estimate']
+robust_se_cz_p2_moral <- cz_p2_moral_summary$coefficients[2, 'Robust S.E.']
+robust_z_cz_p2_moral <- cz_p2_moral_summary$coefficients[2, 'Robust z']
+
+moral_cz_p2_p_val <- (1 - pnorm(abs(robust_z_cz_p2_moral))) * 2
+
+{r}
+#| label: CZ/N2/moral 
+#| include: false
+
+cz_n2_moral <- eeg_category_column  %>%
+  filter(electrode == "Cz",
+         word_type == "moral" | word_type == "non-moral",
+         t >= 250,
+         t < 350) %>%
+  group_by( subject, event_id, is_word, word_type) %>%
+  summarize(mean_voltage = mean(v))
+
+cz_n2_moral_model <- gee(mean_voltage ~ word_type,
+  id = subject,               
+	data = cz_n2_moral, # you'll need to create this
+	family = gaussian,
+	corstr = "exchangeable")
+
+cz_n2_moral_summary <- summary(cz_n2_moral_model)
+
+estimate_cz_n2_moral <- cz_n2_moral_summary$coefficients[2, 'Estimate']
+robust_se_cz_n2_moral <- cz_n2_moral_summary$coefficients[2, 'Robust S.E.']
+robust_z_cz_n2_moral <- cz_n2_moral_summary$coefficients[2, 'Robust z']
+
+moral_cz_n2_p_val <- (1 - pnorm(abs(robust_z_cz_n2_moral))) * 2
+
+{r}
+#| label: CZ/P3/moral 
+#| include: false
+
+cz_p3_moral <- eeg_category_column  %>%
+  filter(electrode == "Cz",
+         word_type == "moral" | word_type == "non-moral",
+         t >= 350,
+         t < 600) %>%
+  group_by( subject, event_id, is_word, word_type) %>%
+  summarize(mean_voltage = mean(v))
+
+cz_p3_moral_model <- gee(mean_voltage ~ word_type,
+  id = subject,               
+	data = cz_p3_moral, # you'll need to create this
+	family = gaussian,
+	corstr = "exchangeable")
+
+cz_p3_moral_summary <- summary(cz_p3_moral_model)
+
+estimate_cz_p3_moral <- cz_p3_moral_summary$coefficients[2, 'Estimate']
+robust_se_cz_p3_moral <- cz_p3_moral_summary$coefficients[2, 'Robust S.E.']
+robust_z_cz_p3_moral <- cz_p3_moral_summary$coefficients[2, 'Robust z']
+
+moral_cz_p3_p_val <- (1 - pnorm(abs(robust_z_cz_p3_moral))) * 2
+
+{r}
+#| label: CZ/LPP/moral 
+#| include: false
+
+cz_LPP_moral <- eeg_category_column  %>%
+  filter(electrode == "Cz",
+         word_type == "moral" | word_type == "non-moral",
+         t >= 600,
+         t < 800) %>%
+  group_by( subject, event_id, is_word, word_type) %>%
+  summarize(mean_voltage = mean(v))
+
+cz_LPP_moral_model <- gee(mean_voltage ~ word_type,
+  id = subject,               
+	data = cz_LPP_moral, # you'll need to create this
+	family = gaussian,
+	corstr = "exchangeable")
+
+cz_LPP_moral_summary <- summary(cz_LPP_moral_model)
+
+estimate_cz_LPP_moral <- cz_LPP_moral_summary$coefficients[2, 'Estimate']
+robust_se_cz_LPP_moral <- cz_LPP_moral_summary$coefficients[2, 'Robust S.E.']
+robust_z_cz_LPP_moral <- cz_LPP_moral_summary$coefficients[2, 'Robust z']
+
+moral_cz_LPP_p_val <- (1 - pnorm(abs(robust_z_cz_LPP_moral))) * 2
+
+{r}
+#| label: FASHION/NON-FASHION words @ Cz
+#| include: false
+
+{r}
+#| label: CZ/P2/fashion 
+#| include: false
+
+cz_p2_fashion <- eeg_category_column  %>%
+  filter(electrode == "Cz",
+         word_type == "fashion" | word_type == "non-fashion",
+         t >= 200,
+         t < 250) %>%
+  group_by( subject, event_id, is_word, word_type) %>%
+  summarize(mean_voltage = mean(v))
+
+cz_p2_fashion_model <- gee(mean_voltage ~ word_type,
+  id = subject,               
+	data = cz_p2_fashion, 
+	family = gaussian,
+	corstr = "exchangeable")
+
+cz_p2_fashion_summary <- summary(cz_p2_fashion_model)
+
+estimate_cz_p2_fashion <- cz_p2_fashion_summary$coefficients[2, 'Estimate']
+robust_se_cz_p2_fashion <- cz_p2_fashion_summary$coefficients[2, 'Robust S.E.']
+robust_z_cz_p2_fashion <- cz_p2_fashion_summary$coefficients[2, 'Robust z']
+
+fashion_cz_p2_p_val <- (1 - pnorm(abs(robust_z_cz_p2_fashion))) * 2
+
+{r}
+#| label: CZ/N2/fashion 
+#| include: false
+
+cz_n2_fashion <- eeg_category_column  %>%
+  filter(electrode == "Cz",
+         word_type == "fashion" | word_type == "non-fashion",
+         t >= 250,
+         t < 350) %>%
+  group_by(subject, event_id, is_word, word_type) %>%
+  summarize(mean_voltage = mean(v))
+
+cz_n2_fashion_model <- gee(mean_voltage ~ word_type,
+  id = subject,               
+	data = cz_n2_fashion, # you'll need to create this
+	family = gaussian,
+	corstr = "exchangeable")
+
+cz_n2_fashion_summary <- summary(cz_n2_fashion_model)
+
+estimate_cz_n2_fashion <- cz_n2_fashion_summary$coefficients[2, 'Estimate']
+robust_se_cz_n2_fashion <- cz_n2_fashion_summary$coefficients[2, 'Robust S.E.']
+robust_z_cz_n2_fashion <- cz_n2_fashion_summary$coefficients[2, 'Robust z']
+
+fashion_cz_n2_p_val<- (1 - pnorm(abs(robust_z_pz_n2_fashion))) * 2
+
+{r}
+#| label: CZ_P3_fashion 
+#| include: false
+
+cz_p3_fashion <- eeg_category_column  %>%
+  filter(electrode == "Cz",
+         word_type == "fashion" | word_type == "non-fashion",
+         t >= 350,
+         t < 600) %>%
+  group_by(subject, event_id, is_word, word_type) %>%
+  summarize(mean_voltage = mean(v))
+
+cz_p3_fashion_model <- gee(mean_voltage ~ word_type,
+  id = subject,               
+	data = cz_p3_fashion, # you'll need to create this
+	family = gaussian,
+	corstr = "exchangeable")
+
+cz_p3_fashion_summary <- summary(cz_p3_fashion_model)
+
+estimate_cz_p3_fashion <- cz_p3_fashion_summary$coefficients[2, 'Estimate']
+robust_se_cz_p3_fashion <- cz_p3_fashion_summary$coefficients[2, 'Robust S.E.']
+robust_z_cz_p3_fashion <- cz_p3_fashion_summary$coefficients[2, 'Robust z']
+
+fashion_cz_p3_p_val <- (1 - pnorm(abs(robust_z_cz_p3_fashion))) * 2
+
+{r}
+#| label: CZ_LPP_fashion 
+#| include: false
+
+cz_LPP_fashion <- eeg_category_column  %>%
+  filter(electrode == "Cz",
+          word_type == "fashion" | word_type == "non-fashion",
+         t >= 600,
+         t < 800) %>%
+  group_by(subject, event_id, is_word, word_type) %>%
+  summarize(mean_voltage = mean(v))
+
+cz_LPP_fashion_model <- gee(mean_voltage ~ word_type,
+  id = subject,               
+	data = cz_LPP_fashion, # you'll need to create this
+	family = gaussian,
+	corstr = "exchangeable")
+
+cz_LPP_fashion_summary <- summary(cz_LPP_fashion_model)
+
+estimate_cz_LPP_fashion <- cz_LPP_fashion_summary$coefficients[2, 'Estimate']
+robust_se_cz_LPP_fashion <- cz_LPP_fashion_summary$coefficients[2, 'Robust S.E.']
+robust_z_cz_LPP_fashion <- cz_LPP_fashion_summary$coefficients[2, 'Robust z']
+
+fashion_cz_LPP_p_val <- (1 - pnorm(abs(robust_z_cz_LPP_fashion))) * 2
